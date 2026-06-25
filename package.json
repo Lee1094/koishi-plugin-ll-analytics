@@ -1,0 +1,37 @@
+{
+  "name": "koishi-plugin-ll-analytics",
+  "version": "1.0.0",
+  "description": "自定义数据统计：机器人消息量、指令调用、关键词触发排行（横向柱状图）",
+  "main": "lib/index.js",
+  "typings": "lib/index.d.ts",
+  "files": ["lib", "dist"],
+  "scripts": {
+    "build": "tsc",
+    "build:client": "esbuild client/index.ts --bundle --format=esm --external:vue --external:echarts --external:@koishijs/client --external:@koishijs/console --outfile=dist/index.js",
+    "clean": "rimraf lib dist"
+  },
+  "author": "lee",
+  "license": "MIT",
+  "keywords": ["koishi", "koishi-plugin", "analytics", "statistics"],
+  "koishi": {
+    "description": {
+      "zh": "自定义数据统计：横向柱状图展示各机器人消息量、指令调用排行、关键词触发排行"
+    },
+    "service": {
+      "required": ["console"],
+      "optional": ["database"]
+    }
+  },
+  "peerDependencies": {
+    "@koishijs/plugin-console": "^5.24.3",
+    "koishi": "^4.16.3"
+  },
+  "devDependencies": {
+    "@koishijs/client": "^5.24.3",
+    "@koishijs/console": "^5.24.3",
+    "echarts": "^5.4.3",
+    "esbuild": "^0.20.0",
+    "koishi": "^4.18.0",
+    "typescript": "^5.4.0"
+  }
+}
