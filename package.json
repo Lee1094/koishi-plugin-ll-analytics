@@ -1,6 +1,6 @@
 {
   "name": "koishi-plugin-ll-analytics",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "自定义数据统计：机器人消息量、指令调用、关键词触发排行（横向柱状图）",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",

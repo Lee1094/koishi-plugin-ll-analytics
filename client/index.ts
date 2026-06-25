@@ -1,7 +1,6 @@
-import { Context } from '@koishijs/client'
+import { Context, store } from '@koishijs/client'
 import { defineComponent, h, ref, onMounted, onUnmounted, computed } from 'vue'
 
-// ECharts from CDN
 let echarts: any = null
 
 function loadECharts(): Promise<any> {
@@ -11,18 +10,14 @@ function loadECharts(): Promise<any> {
       echarts = (window as any).echarts
       return resolve(echarts)
     }
-    const script = document.createElement('script')
-    script.src = 'https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js'
-    script.onload = () => {
-      echarts = (window as any).echarts
-      resolve(echarts)
-    }
-    script.onerror = reject
-    document.head.appendChild(script)
+    const s = document.createElement('script')
+    s.src = 'https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js'
+    s.onload = () => { echarts = (window as any).echarts; resolve(echarts) }
+    s.onerror = reject
+    document.head.appendChild(s)
   })
 }
 
-// 横向柱状图组件
 const BarChart = defineComponent({
   props: {
     title: String,
@@ -33,131 +28,83 @@ const BarChart = defineComponent({
     const container = ref<HTMLElement>()
     let chart: any = null
 
-    onMounted(async () => {
-      await loadECharts()
-      if (!container.value || !props.data?.length) return
-      chart = echarts.init(container.value)
-      const names = props.data.map(d => d.name).reverse()
-      const values = props.data.map(d => d.value).reverse()
+    function render() {
+      if (!container.value || !props.data?.length || !echarts) return
+      if (!chart) chart = echarts.init(container.value)
+      const reversed = [...props.data].reverse()
       chart.setOption({
         tooltip: {
           trigger: 'axis',
           axisPointer: { type: 'shadow' },
           formatter: (p: any) => {
             const d = p[0]
-            const extra = props.data[props.data.length - 1 - d.dataIndex]?.extra || ''
+            const idx = props.data.length - 1 - d.dataIndex
+            const extra = props.data[idx]?.extra || ''
             return `${d.name}<br/>${extra ? extra + '<br/>' : ''}次数：${d.value}`
           },
         },
-        grid: { left: 120, right: 40, top: 10, bottom: 20 },
+        grid: { left: 140, right: 40, top: 8, bottom: 16 },
         xAxis: { type: 'value' },
-        yAxis: { type: 'category', data: names, axisLabel: { width: 100, overflow: 'truncate' } },
+        yAxis: { type: 'category', data: reversed.map(d => d.name), axisLabel: { width: 110, overflow: 'truncate' } },
         series: [{
-          type: 'bar', data: values,
+          type: 'bar', data: reversed.map(d => d.value),
           itemStyle: { color: props.color, borderRadius: [0, 4, 4, 0] },
         }],
-      })
-    })
+      }, true)
+    }
 
-    onUnmounted(() => { chart?.dispose() })
+    onMounted(async () => {
+      await loadECharts()
+      render()
+    })
+    onUnmounted(() => chart?.dispose())
 
     return () => h('div', [
-      h('h3', { style: 'margin: 16px 0 8px; color: var(--fg1);' }, props.title),
-      h('div', { ref: container, style: 'height: ' + Math.max(200, props.data.length * 28) + 'px' }),
+      h('h3', { style: 'margin:20px 0 8px;font-size:15px;color:var(--fg1);' }, props.title),
+      h('div', { ref: container, style: 'height:' + Math.max(200, (props.data?.length || 1) * 30) + 'px' }),
     ])
   },
 })
 
-// 主页面
 const Page = defineComponent({
   setup() {
-    const data = ref<any>(null)
-    const loading = ref(true)
-    const timer = ref<any>(null)
+    return () => {
+      const d = (store as any)['ll-analytics']
+      if (!d) return h('div', { style: 'text-align:center;padding:48px;color:var(--fg2);' }, '加载中...')
 
-    async function fetchData() {
-      try {
-        loading.value = true
-        const svc = (window as any).__koishi_console__?.services?.['ll-analytics']
-        if (svc?.get) {
-          data.value = await svc.get()
-        }
-      } catch (e) {
-        console.warn('[ll-analytics] fetch error:', e)
-      } finally {
-        loading.value = false
-      }
-    }
-
-    onMounted(() => {
-      fetchData()
-      timer.value = setInterval(fetchData, 60_000)
-    })
-    onUnmounted(() => clearInterval(timer.value))
-
-    const msgData = computed(() =>
-      (data.value?.messageByBot || []).map((b: any) => ({
+      const msgData = (d.messageByBot || []).map((b: any) => ({
         name: b.bot,
         value: b.send + b.receive,
-        extra: `发送 ${b.send} ｜ 接收 ${b.receive}`,
+        extra: `发送 ${b.send.toLocaleString()} ｜ 接收 ${b.receive.toLocaleString()}`,
       }))
-    )
-    const cmdData = computed(() =>
-      (data.value?.commandRank || []).map((c: any) => ({ name: c.name, value: c.count }))
-    )
-    const trgData = computed(() =>
-      (data.value?.triggerRank || []).map((t: any) => ({
+      const cmdData = (d.commandRank || []).map((c: any) => ({ name: c.name, value: c.count }))
+      const trgData = (d.triggerRank || []).map((t: any) => ({
         name: `${t.plugin} / ${t.keyword}`,
         value: t.count,
       }))
-    )
 
-    return () => {
-      if (loading.value && !data.value) {
-        return h('div', { style: 'text-align:center;padding:48px;color:var(--fg2);' }, '加载中...')
-      }
-      if (!data.value) {
-        return h('div', { style: 'text-align:center;padding:48px;color:var(--fg2);' }, '暂无数据')
-      }
-
-      // 总览数字
       const nums = [
-        { label: '总消息量', value: data.value.totalMessages },
-        { label: '总指令调用', value: data.value.totalCommands },
-        { label: '总关键词触发', value: data.value.totalTriggers },
+        { label: '总消息量', value: d.totalMessages || 0 },
+        { label: '总指令调用', value: d.totalCommands || 0 },
+        { label: '总关键词触发', value: d.totalTriggers || 0 },
       ]
 
-      return h('div', { style: 'padding: 0 16px 24px; max-width: 900px; margin: 0 auto;' }, [
-        // 概览卡片
+      return h('div', { style: 'padding:0 20px 24px;max-width:900px;margin:0 auto;' }, [
         h('div', { style: 'display:flex;gap:16px;margin:16px 0;flex-wrap:wrap;' },
           nums.map(n => h('div', {
-            style: 'flex:1;min-width:140px;background:var(--card-bg,var(--bg2));border-radius:8px;padding:16px;text-align:center;',
+            style: 'flex:1;min-width:130px;background:var(--card-bg,var(--bg2));border-radius:8px;padding:16px;text-align:center;',
           }, [
-            h('div', { style: 'font-size:13px;color:var(--fg2);margin-bottom:4px;' }, n.label),
-            h('div', { style: 'font-size:32px;font-weight:700;color:var(--fg1);' }, n.value.toLocaleString()),
+            h('div', { style: 'font-size:12px;color:var(--fg2);margin-bottom:4px;' }, n.label),
+            h('div', { style: 'font-size:28px;font-weight:700;color:var(--fg1);' }, n.value.toLocaleString()),
           ]))
         ),
 
-        // 机器人消息量
-        msgData.value.length > 0 && h(BarChart, {
-          title: '🤖 各机器人消息量（近7天）',
-          data: msgData.value,
-          color: '#5470c6',
-        }),
+        msgData.length > 0 && h(BarChart, { title: '🤖 各机器人消息量', data: msgData, color: '#5470c6' }),
+        cmdData.length > 0 && h(BarChart, { title: '⚡ 指令调用排行', data: cmdData.slice(0, 15), color: '#91cc75' }),
+        trgData.length > 0 && h(BarChart, { title: '🔑 关键词触发排行', data: trgData.slice(0, 15), color: '#ee6666' }),
 
-        // 指令排行
-        cmdData.value.length > 0 && h(BarChart, {
-          title: '⚡ 指令调用排行（近7天）',
-          data: cmdData.value.slice(0, 15),
-          color: '#91cc75',
-        }),
-
-        // 关键词触发排行
-        trgData.value.length > 0 && h(BarChart, {
-          title: '🔑 关键词触发排行（近7天）',
-          data: trgData.value.slice(0, 15),
-          color: '#ee6666',
-        }),
+        msgData.length === 0 && cmdData.length === 0 && trgData.length === 0 &&
+          h('div', { style: 'text-align:center;padding:48px;color:var(--fg2);' }, '暂无统计数据，使用一段时间后会自动出现'),
       ])
     }
   },
@@ -167,7 +114,7 @@ export default (ctx: Context) => {
   ctx.addPage({
     path: '/ll-analytics',
     name: '📊 数据分析',
-    icon: 'chart-bar',
+    icon: 'activity',
     component: Page,
   })
 }
