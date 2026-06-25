@@ -1,29 +1,35 @@
 {
   "name": "koishi-plugin-ll-analytics",
-  "version": "1.4.0",
-  "description": "自定义数据统计：消息量、指令调用、关键词触发",
+  "version": "1.4.1",
+  "description": "自定义数据统计：消息量、指令调用、关键词触发（替代官方analytics）",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
-  "files": ["lib"],
+  "files": ["lib", "dist"],
   "scripts": {
     "build": "tsc",
-    "clean": "rimraf lib"
+    "build:client": "esbuild client/index.ts --bundle --format=esm --external:vue --external:echarts --external:@koishijs/client --outfile=dist/index.js",
+    "clean": "rimraf lib dist"
   },
   "author": "lee",
   "license": "MIT",
   "keywords": ["koishi", "koishi-plugin", "analytics", "statistics"],
   "koishi": {
     "description": {
-      "zh": "自定义数据统计：消息量/指令调用/关键词触发，命令查看排行"
+      "zh": "自定义数据统计：横向柱状图展示机器人消息量、指令调用、关键词触发排行"
     },
     "service": {
-      "required": ["database"]
+      "required": ["console"],
+      "optional": ["database"]
     }
   },
   "peerDependencies": {
-    "koishi": "^4.18.0"
+    "@koishijs/plugin-console": "^5.24.3",
+    "koishi": "^4.16.3"
   },
   "devDependencies": {
+    "@koishijs/client": "^5.24.3",
+    "@koishijs/console": "^5.24.3",
+    "esbuild": "^0.20.0",
     "koishi": "^4.18.0",
     "typescript": "^5.4.0"
   }
