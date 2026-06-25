@@ -69,7 +69,7 @@ const BarChart = defineComponent({
 const Page = defineComponent({
   setup() {
     return () => {
-      const d = (store as any)['ll-analytics']
+      const d = (store as any).analytics
       if (!d) return h('div', { style: 'text-align:center;padding:48px;color:var(--fg2);' }, '加载中...')
 
       const msgData = (d.messageByBot || []).map((b: any) => ({
