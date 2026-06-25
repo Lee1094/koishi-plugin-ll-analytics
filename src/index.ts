@@ -1,4 +1,4 @@
-import { $, Context, Logger, Schema, Time } from 'koishi'
+import { $, Context, Dict, Logger, Schema, Session, Time, Universal } from 'koishi'
 import { DataService } from '@koishijs/console'
 import { resolve } from 'path'
 
@@ -18,16 +18,21 @@ declare module '@koishijs/console' {
   }
 }
 
-const logger = new Logger('ll-analytics')
+export interface MessageStats { send: number; receive: number }
+
+const logger = new Logger('analytics')
 
 class Analytics extends DataService<Analytics.Payload> {
   static inject = ['database', 'console']
 
-  private _msgs: Analytics.Message[] = []
-  private _cmds: Analytics.Command[] = []
-  private _trgs: Analytics.Trigger[] = []
-  private _last = Date.now()
-  private _cache: Analytics.Payload | null = null
+  lastUpdate = new Date()
+  updateHour = this.lastUpdate.getHours()
+  cachedDate: number
+  cachedData: Promise<Analytics.Payload>
+
+  private messages: Analytics.Message[] = []
+  private commands: Analytics.Command[] = []
+  private triggers: Analytics.Trigger[] = []
 
   constructor(ctx: Context, public config: Analytics.Config = {} as Analytics.Config) {
     super(ctx, 'analytics')
@@ -39,95 +44,216 @@ class Analytics extends DataService<Analytics.Payload> {
 
     ctx.model.extend('analytics.command', {
       date: 'integer', hour: 'integer', name: 'string(63)',
-      selfId: 'string(63)', platform: 'string(63)',
-      userId: 'string(63)', channelId: 'string(63)', count: 'integer',
-    }, { primary: ['date', 'hour', 'name', 'selfId', 'platform', 'userId', 'channelId'] })
+      selfId: 'string(63)', userId: 'integer', channelId: 'string(63)',
+      platform: 'string(63)', count: 'integer',
+    }, { primary: ['date', 'hour', 'name', 'selfId', 'userId', 'channelId', 'platform'] })
 
     ctx.model.extend('analytics.trigger', {
       date: 'integer', keyword: 'string(127)', count: 'integer',
     }, { primary: ['date', 'keyword'] })
 
-    ctx.on('message', (s) => { this._pushMsg(s, 'receive'); this._flush() })
-    ctx.on('send', (s) => { this._pushMsg(s, 'send'); this._flush() })
+    ctx.on('exit', () => this.upload(true))
+    ctx.on('dispose', async () => { await this.upload(true) })
 
-    ctx.any().before('command/execute', ({ command, session }) => {
-      this._cmds.push({
-        ...this._idx(session), name: command.name,
-        userId: String((session as any).event?.user?.id || ''),
-        channelId: session.channelId || '',
-        count: 1,
-      })
+    ctx.on('message', (session) => {
+      this.messages.push({ ...this._idx(session), type: 'receive', count: 1 })
+      this.upload()
+    })
+    ctx.on('send', (session) => {
+      this.messages.push({ ...this._idx(session), type: 'send', count: 1 })
+      this.upload()
     })
 
+    ctx.any().before('command/execute', ({ command, session }) => {
+      this.commands.push({
+        ...this._idx(session), name: command.name,
+        userId: (session as any).user?.['id'] || 0,
+        channelId: (session as any).channelId || '',
+        count: 1,
+      })
+      this.upload()
+    })
+
+    // 关键词监听
     if (this.config.trackKeywords?.length) {
       ctx.middleware((session, next) => {
-        const t = session.content || ''
-        if (typeof t === 'string') for (const kw of this.config.trackKeywords) if (t.includes(kw)) { this._trgs.push({ date: Time.getDateNumber(), keyword: kw, count: 1 }); this._flush(); break }
+        const t = (session as any).content || ''
+        if (typeof t === 'string') for (const kw of this.config.trackKeywords!)
+          if (t.includes(kw)) { this.triggers.push({ date: Time.getDateNumber(), keyword: kw, count: 1 }); this.upload(); break }
         return next()
       }, true)
     }
 
     ctx.console.addEntry({
       dev: resolve(__dirname, '../client/index.ts'),
-      prod: resolve(__dirname, '../dist/index.js'),
+      prod: resolve(__dirname, '../dist'),
     })
-
-    ctx.on('dispose', () => this._flush(true))
-    logger.info(`已启动 | ${this.config.trackKeywords?.length || 0}个关键词`)
   }
 
-  private _idx(s: any) { return { date: Time.getDateNumber(), hour: new Date().getHours(), selfId: s.selfId || s.bot?.selfId || 'unknown', platform: s.platform || 'unknown' } }
-  private _pushMsg(s: any, type: string) { this._msgs.push({ ...this._idx(s), type, count: 1 }) }
+  private _idx(session: any) {
+    return {
+      selfId: session.selfId || (session as any).bot?.selfId || '0',
+      platform: session.platform || 'unknown',
+      date: Time.getDateNumber(),
+      hour: new Date().getHours(),
+    }
+  }
 
-  private async _flush(force = false) {
-    const now = Date.now(); if (!force && now - this._last < 5000) return; this._last = now
-    try {
+  async upload(forced = false) {
+    const date = new Date()
+    const dateHour = date.getHours()
+    if (forced || +date - +this.lastUpdate > (this.config.statsInternal || 600000) || dateHour !== this.updateHour) {
+      this.lastUpdate = date
+      this.updateHour = dateHour
       const db = this.ctx.database
-      if (this._msgs.length) { const buf = this._msgs; this._msgs = []; for (const r of buf) await db.upsert('analytics.message', [r as any], ['date', 'hour', 'type', 'selfId', 'platform']) }
-      if (this._cmds.length) { const buf = this._cmds; this._cmds = []; for (const r of buf) await db.upsert('analytics.command', [r as any], ['date', 'hour', 'name', 'selfId', 'platform', 'userId', 'channelId']) }
-      if (this._trgs.length) { const buf = this._trgs; this._trgs = []; for (const r of buf) await db.upsert('analytics.trigger', [r as any], ['date', 'keyword']) }
-    } catch (e: any) { logger.warn('flush:', e?.message || e) }
+      try {
+        if (this.messages.length) {
+          const buf = this.messages; this.messages = []
+          for (const r of buf) await db.upsert('analytics.message', [r as any], ['date', 'hour', 'type', 'selfId', 'platform'])
+        }
+        if (this.commands.length) {
+          const buf = this.commands; this.commands = []
+          for (const r of buf) await db.upsert('analytics.command', [r as any], ['date', 'hour', 'name', 'selfId', 'userId', 'channelId', 'platform'])
+        }
+        if (this.triggers.length) {
+          const buf = this.triggers; this.triggers = []
+          for (const r of buf) await db.upsert('analytics.trigger', [r as any], ['date', 'keyword'])
+        }
+        logger.debug('analytics updated')
+      } catch (e: any) { logger.warn('upload:', e?.message || e) }
+    }
   }
 
-  async get(): Promise<Analytics.Payload> {
-    if (this._cache) return this._cache
-    const db = this.ctx.database
-    try {
-      const mRows: any[] = await db.select('analytics.message').groupBy(['selfId', 'type']).execute()
-      const bots = new Map<string, { send: number; receive: number }>()
-      for (const r of mRows) { const l = r.selfId || '?'; if (!bots.has(l)) bots.set(l, { send: 0, receive: 0 }); const b = bots.get(l)!; if (r.type === 'send') b.send += r.count; else b.receive += r.count }
-      const messageByBot = [...bots.entries()].map(([bot, v]) => ({ bot, ...v })).sort((a, b) => (b.send + b.receive) - (a.send + a.receive))
+  private _qRecent() {
+    const d = this.config.recentDayCount || 7
+    return { $gte: Time.getDateNumber() - d, $lt: Time.getDateNumber() } as any
+  }
 
-      const cRows: any[] = await db.select('analytics.command').groupBy(['name']).execute()
-      const cm = new Map<string, number>(); for (const r of cRows) cm.set(r.name, (cm.get(r.name) || 0) + r.count)
-      const commandRank = [...cm.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count).slice(0, 30)
+  private async _getCommandRate(lengthTask: Promise<number>) {
+    const data: any[] = await this.ctx.database.select('analytics.command' as any, { date: this._qRecent() })
+      .groupBy(['name'], { count: (row: any) => $.sum(row.count) }).execute()
+    const len = await lengthTask
+    const result: Dict<number> = {}
+    data.forEach(s => { result[s.name] = s.count / len })
+    return result
+  }
 
-      const tRows: any[] = await db.select('analytics.trigger').groupBy(['keyword']).execute()
-      const tm = new Map<string, number>(); for (const r of tRows) tm.set(r.keyword, (tm.get(r.keyword) || 0) + r.count)
-      const triggerRank = [...tm.entries()].map(([keyword, count]) => ({ keyword, count })).sort((a, b) => b.count - a.count).slice(0, 30)
+  private async _getDauHistory() {
+    const d = this.config.recentDayCount || 7
+    const data: any[] = await this.ctx.database.select('analytics.command' as any, { date: { $gte: Time.getDateNumber() - d }, userId: { $gt: 0 } })
+      .groupBy(['date'], { count: (row: any) => $.count(row.userId) }).execute()
+    const result: number[] = new Array(d + 1).fill(0)
+    const today = Time.getDateNumber()
+    data.forEach(s => { result[today - s.date] = s.count })
+    return result
+  }
 
-      this._cache = { messageByBot, commandRank, triggerRank, totalMessages: messageByBot.reduce((s, b) => s + b.send + b.receive, 0), totalCommands: commandRank.reduce((s, c) => s + c.count, 0), totalTriggers: triggerRank.reduce((s, t) => s + t.count, 0) }
-      return this._cache
-    } catch (e) { logger.warn('get:', e); return { messageByBot: [], commandRank: [], triggerRank: [], totalMessages: 0, totalCommands: 0, totalTriggers: 0 } }
+  private async _getMessageByBot(lengthTask: Promise<number>) {
+    const data: any[] = await this.ctx.database.select('analytics.message' as any, { date: this._qRecent() })
+      .groupBy(['type', 'platform', 'selfId'], { count: (row: any) => $.sum(row.count) }).execute()
+    const len = await lengthTask
+    const result: Dict<Dict<MessageStats & Universal.User>> = {}
+    data.forEach(s => {
+      const entry = (result[s.platform] ||= {})[s.selfId] ||= {
+        ...this.ctx.bots[`${s.platform}:${s.selfId}`]?.user, send: 0, receive: 0,
+      }
+      entry[s.type] = s.count / len
+    })
+    return result
+  }
+
+  private async _getMessageByDate() {
+    const data: any[] = await this.ctx.database.select('analytics.message' as any, { date: { $lt: Time.getDateNumber() } })
+      .groupBy(['type', 'date'], { count: (row: any) => $.sum(row.count) }).orderBy('date', 'desc').execute()
+    const today = Time.getDateNumber()
+    const result: MessageStats[] = []
+    data.forEach(s => {
+      const entry = result[today - s.date] ||= { send: 0, receive: 0 }
+      entry[s.type] = s.count
+    })
+    for (let i = 0; i < result.length; i++) result[i] ||= { send: 0, receive: 0 }
+    return result
+  }
+
+  private async _getMessageByHour(lengthTask: Promise<number>) {
+    const data: any[] = await this.ctx.database.select('analytics.message' as any, { date: this._qRecent() })
+      .groupBy(['type', 'hour'], { count: (row: any) => $.sum(row.count) }).execute()
+    const len = await lengthTask
+    const result = new Array(24).fill(null).map(() => ({ send: 0, receive: 0 }))
+    data.forEach(s => { result[s.hour][s.type] = s.count / len })
+    return result
+  }
+
+  private async _getTriggerRank() {
+    const data: any[] = await this.ctx.database.select('analytics.trigger' as any)
+      .groupBy(['keyword'], { count: (row: any) => $.sum(row.count) }).execute()
+    return data.sort((a, b) => b.count - a.count).slice(0, 30)
+  }
+
+  async download(): Promise<Analytics.Payload> {
+    const messageByDateTask = this._getMessageByDate()
+    const lengthTask = messageByDateTask.then(data => Math.min(Math.max(data.length - 1, 1), this.config.recentDayCount || 7))
+    const [
+      userCount, userIncrement, guildCount, guildIncrement,
+      commandRate, dauHistory, messageByBot, messageByDate, messageByHour, triggerRank,
+    ] = await Promise.all([
+      this.ctx.database.eval('user', row => $.count(row.id)),
+      this.ctx.database.eval('user', row => $.count(row.id), {
+        createdAt: { $gte: Time.fromDateNumber(Time.getDateNumber() - 1), $lt: Time.fromDateNumber(Time.getDateNumber()) },
+      }),
+      this.ctx.database.eval('channel', row => $.sum(1), row => $.eq(row.id, row.guildId)),
+      this.ctx.database.eval('channel', row => $.sum(1), row => $.and(
+        $.eq(row.id, row.guildId),
+        $.gte(row.createdAt, Time.fromDateNumber(Time.getDateNumber() - 1)),
+        $.lt(row.createdAt, Time.fromDateNumber(Time.getDateNumber())),
+      )),
+      this._getCommandRate(lengthTask),
+      this._getDauHistory(),
+      this._getMessageByBot(lengthTask),
+      messageByDateTask,
+      this._getMessageByHour(lengthTask),
+      this._getTriggerRank(),
+    ])
+    return { userCount, userIncrement, guildCount, guildIncrement, commandRate, dauHistory, messageByBot, messageByDate, messageByHour, triggerRank }
+  }
+
+  async get() {
+    const date = new Date()
+    const dateNumber = Time.getDateNumber(date, date.getTimezoneOffset())
+    if (dateNumber !== this.cachedDate) {
+      this.cachedData = this.download()
+      this.cachedDate = dateNumber
+    }
+    return this.cachedData
   }
 }
 
 namespace Analytics {
-  export interface Index { date: number; hour: number; selfId: string; platform: string }
+  export interface Index { id?: number; date: number; hour: number; selfId: string; platform: string }
   export interface Message extends Index { type: string; count: number }
-  export interface Command extends Index { name: string; userId: string; channelId: string; count: number }
+  export interface Command extends Index { name: string; userId: number; channelId: string; count: number }
   export interface Trigger { date: number; keyword: string; count: number }
 
   export interface Payload {
-    messageByBot: { bot: string; send: number; receive: number }[]
-    commandRank: { name: string; count: number }[]
+    userCount: number; userIncrement: number
+    guildCount: number; guildIncrement: number
+    dauHistory: number[]
+    commandRate: Dict<number>
+    messageByBot: Dict<Dict<MessageStats & Universal.User>>
+    messageByDate: MessageStats[]
+    messageByHour: MessageStats[]
     triggerRank: { keyword: string; count: number }[]
-    totalMessages: number; totalCommands: number; totalTriggers: number
   }
 
-  export interface Config { trackKeywords: string[] }
+  export interface Config {
+    statsInternal?: number
+    recentDayCount?: number
+    trackKeywords?: string[]
+  }
 
   export const Config: Schema<Config> = Schema.object({
+    statsInternal: Schema.natural().role('ms').description('统计数据推送的时间间隔。').default(Time.minute * 10),
+    recentDayCount: Schema.natural().description('统计最近几天的数据。').default(7),
     trackKeywords: Schema.array(Schema.string()).role('table').description('要统计的关键词').default([
       '门派升级', '门派费用', '探索日志', '探索地图', '礼包码', '主播礼包码',
       '神功牌属性', '秘功牌属性', '装备', '仙幻装备', '装备升级', '装备强化',

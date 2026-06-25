@@ -1,6 +1,6 @@
 {
   "name": "koishi-plugin-ll-analytics",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "自定义数据统计：消息量、指令调用、关键词触发（WebUI显示）",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
