@@ -21,6 +21,7 @@ interface LlTrigger { date: number; plugin: string; keyword: string; count: numb
 export interface Config {
   recentDays: number
   refreshInterval: number
+  trackKeywords: string[]
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -28,6 +29,31 @@ export const Config: Schema<Config> = Schema.object({
     .description('统计最近几天的数据').min(1).max(90).step(1).default(7),
   refreshInterval: Schema.number()
     .description('数据缓存刷新间隔（毫秒）').min(30000).max(3600000).step(1000).default(600000),
+  trackKeywords: Schema.array(Schema.string()).role('table')
+    .description('要统计的关键词（analytics 自己监听命中，无需改其他插件）')
+    .default([
+      '门派升级', '门派费用', '探索日志', '探索地图', '礼包码', '主播礼包码',
+      '神功牌属性', '秘功牌属性', '装备', '仙幻装备', '装备升级', '装备强化',
+      '桃子礼包码', '桃子礼包', '八卦', '八卦牌', '血猪八卦', '飞凤八卦', '鬼灵墓八卦', '仙幻八卦',
+      '菜单', '帮助', '世界boss', '世界BOSS', '活动链接', '怀旧活动', '怀旧服活动',
+      '拳师词条', '拳师技能', '火剑词条', '火剑技能',
+      '气功词条', '气功技能', '攻时词条', '攻时技能',
+      '推龙词条', '推龙技能',
+      '冰气功词条', '冰气功技能', '冰气词条', '冰气技能', '冰河词条', '冰河技能',
+      '力士词条', '力士技能', '执行词条', '执行技能', '执行力士词条', '执行力士技能',
+      '毁灭词条', '毁灭技能', '毁灭力士词条', '毁灭力士技能',
+      '刺客词条', '刺客技能',
+      '召唤词条', '召唤技能', '大黄蜂词条', '大黄蜂技能',
+      '攻血词条', '攻血技能', '召唤攻血词条', '召唤攻血技能',
+      '向日葵词条', '向日葵技能', '召唤向日葵词条', '召唤向日葵技能',
+      '灵剑士词条', '灵剑士技能', '灵剑词条', '灵剑技能', '雷灵词条', '雷灵技能', '雷电词条', '雷电技能', '雷力士词条',
+      '风灵词条', '风灵技能', '灵剑风系词条', '灵剑风系技能', '风云词条', '风云技能',
+      '咒术师词条', '咒术师技能', '咒术词条', '咒术技能', '诅咒词条', '诅咒技能', '黑炎龙词条', '黑炎龙技能',
+      '冰咒词条', '冰咒技能', '冰系咒术词条', '冰系咒术技能', '咒术冰系词条', '咒术冰系技能', '咒术师冰系词条', '咒术师冰系技能', '冰龙词条', '冰龙技能',
+      '魔枪词条', '魔枪技能', '魔枪士词条', '魔枪士技能',
+      '小助手下载',
+      '剑士词条', '剑士技能', '雷剑词条', '雷剑技能', '刺剑词条', '刺剑技能',
+    ]),
 })
 
 export interface AnalyticsPayload {
@@ -62,6 +88,23 @@ class LlAnalytics extends DataService<AnalyticsPayload> {
       dev: resolve(__dirname, '../client/index.ts'),
       prod: resolve(__dirname, '../dist/index.js'),
     })
+
+    // 关键词监听：无需改其他插件，analytics 自己统计
+    if (cfg.trackKeywords?.length) {
+      ctx.middleware((session, next) => {
+        const text = session.content || ''
+        if (typeof text === 'string' && text.trim()) {
+          for (const kw of cfg.trackKeywords) {
+            if (text.includes(kw)) {
+              this._triggers.push({ date: Time.getDateNumber(), plugin: 'keyword', keyword: kw, count: 1 })
+              this._flush()
+              break
+            }
+          }
+        }
+        return next()
+      }, true) // 最后执行，不影响其他插件
+    }
 
     // 每 N 毫秒清缓存
     this._timer = setInterval(() => { this._cache = null }, cfg.refreshInterval)
